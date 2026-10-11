@@ -1,0 +1,52 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'vn.cuong.tftboost'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'vn.cuong.tftboost'
+        minSdk 26
+        // targetSdk 34: tranh che do tran vien bat buoc cua Android 15, van cai binh thuong tren S25+
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    // Khoa ky co dinh nam trong repo de cac ban build sau cai de len ban truoc duoc
+    signingConfigs {
+        fixed {
+            storeFile file('tftboost.keystore')
+            storePassword 'tftboost'
+            keyAlias 'tftboost'
+            keyPassword 'tftboost'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.fixed
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.fixed
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+dependencies {
+    implementation 'dev.rikka.shizuku:api:13.1.5'
+    implementation 'dev.rikka.shizuku:provider:13.1.5'
+}
