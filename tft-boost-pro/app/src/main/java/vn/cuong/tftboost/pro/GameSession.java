@@ -126,6 +126,9 @@ final class GameSession {
         if (key.equals("gos")) {
             return "GOS";
         }
+        if (key.equals("thermal")) {
+            return "Giới hạn nhiệt";
+        }
         return key;
     }
 

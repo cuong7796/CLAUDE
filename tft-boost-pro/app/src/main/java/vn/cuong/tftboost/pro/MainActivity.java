@@ -98,13 +98,14 @@ public class MainActivity extends Activity {
     private static final String K_AUTO_RESTORE = "auto_restore";
     private static final String K_DND = "dnd";
     private static final String K_FORCE_STOP = "force_stop";
-    private static final String K_FPS60 = "fps60";
+    private static final String K_FPS120 = "fps120";
     private static final String K_GAMEMODE = "game_mode";
     private static final String K_POWERSAVE = "power_save_off";
     private static final String K_WIFI_LL = "wifi_low_latency";
     private static final String K_SYNC = "sync_off";
     private static final String K_SCAN = "scan_off";
-    private static final String K_GOS = "gos_off";
+    private static final String K_GOS = "gos_off_max";
+    private static final String K_THERMAL = "thermal_override";
     private static final String K_KEEP = "keep";
 
     private static final int C_BG = Color.parseColor("#0E1220");
@@ -253,7 +254,7 @@ public class MainActivity extends Activity {
         scroll.addView(root);
 
         root.addView(text("TFT Boost Pro", 26, C_ACCENT, true));
-        root.addView(text("Tối ưu tối đa qua Shizuku · Khóa 60 FPS · Tự khôi phục khi thoát game", 13, C_DIM, false));
+        root.addView(text("Hiệu năng tối đa qua Shizuku · Khóa 120 FPS · Tự khôi phục khi thoát game", 13, C_DIM, false));
 
         statsView = text("…", 14, C_TEXT, false);
         statsView.setBackground(round(C_CARD, 14));
@@ -275,7 +276,7 @@ public class MainActivity extends Activity {
         root.addView(boostBtn, bp);
 
         root.addView(text("Tối ưu khi vào game", 15, C_GOLD, true), rowParams(22));
-        root.addView(toggle("Khóa 60 FPS (màn hình 60Hz + giới hạn FPS game)", K_FPS60, true));
+        root.addView(toggle("Khóa 120 FPS (màn hình 120Hz cố định + Game Mode 120 FPS)", K_FPS120, true));
         root.addView(toggle("Buộc dừng app nền + dọn RAM", K_FORCE_STOP, true));
         root.addView(toggle("Game Mode hiệu năng cho Đấu Trường Chân Lý", K_GAMEMODE, true));
         root.addView(toggle("Tắt Tiết kiệm pin trong lúc chơi", K_POWERSAVE, true));
@@ -283,7 +284,8 @@ public class MainActivity extends Activity {
         root.addView(toggle("Tạm dừng tự động đồng bộ (Gmail, Drive, Ảnh…)", K_SYNC, true));
         root.addView(toggle("Tắt quét Wi-Fi/Bluetooth chạy nền", K_SCAN, true));
         root.addView(toggle("Bật Không làm phiền", K_DND, true));
-        root.addView(toggle("Tắt GOS – bỏ giới hạn hiệu năng Samsung (máy nóng hơn)", K_GOS, false));
+        root.addView(toggle("Tắt GOS – bỏ giới hạn hiệu năng Samsung (máy nóng hơn)", K_GOS, true));
+        root.addView(toggle("Bỏ giới hạn nhiệt cho game (rất nóng – chỉ bật khi cần)", K_THERMAL, false));
 
         root.addView(text("Sau khi chơi", 15, C_GOLD, true), rowParams(18));
         root.addView(toggle("Thoát game → tự khôi phục mặc định", K_AUTO_RESTORE, true));
@@ -570,15 +572,17 @@ public class MainActivity extends Activity {
         }
 
         if (shell) {
-            // 3) Khoa 60 FPS: man hinh 60Hz + gioi han FPS qua Game Mode
-            if (prefs.getBoolean(K_FPS60, true)) {
-                capture(restore, "s:secure:refresh_rate_mode", "secure", "refresh_rate_mode");
+            // 3) Khoa 120 FPS: man hinh co dinh 120Hz + Game Mode cho phep 120 FPS
+            if (prefs.getBoolean(K_FPS120, true)) {
                 capture(restore, "s:system:peak_refresh_rate", "system", "peak_refresh_rate");
                 capture(restore, "s:system:min_refresh_rate", "system", "min_refresh_rate");
-                boolean hz = step("Màn hình 60Hz (Samsung: Tiêu chuẩn)",
-                        "settings put secure refresh_rate_mode 0; "
-                                + "settings put system peak_refresh_rate 60.0 && "
-                                + "settings put system min_refresh_rate 60.0");
+                String rrm = Shell.get("settings get secure refresh_rate_mode");
+                if ("0".equals(rrm)) {
+                    log("✗ Màn hình đang để Tiêu chuẩn (60Hz). Vào Cài đặt → Màn hình → Độ mượt chuyển động → "
+                            + "chọn Thích ứng thì mới lên được 120Hz.");
+                }
+                boolean hz = step("Màn hình cố định 120Hz (không tự hạ xuống 60Hz/1Hz)",
+                        "settings put system peak_refresh_rate 120.0 && settings put system min_refresh_rate 120.0");
                 if (game != null) {
                     String dcKey = "dc:game_overlay:" + game;
                     if (!restore.containsKey(dcKey)) {
@@ -587,16 +591,16 @@ public class MainActivity extends Activity {
                             restore.put(dcKey, r);
                         }
                     }
-                    step("Giới hạn FPS game = 60 (Game Mode)",
-                            "device_config put game_overlay " + game + " " + Shell.quote("mode=2,fps=60:mode=3,fps=30"));
+                    step("Game Mode cho phép 120 FPS",
+                            "device_config put game_overlay " + game + " " + Shell.quote("mode=2,fps=120:mode=3,fps=60"));
                 }
                 if (hz) {
-                    log("  → Game không thể vượt 60 FPS, máy mát hơn, FPS ổn định hơn");
+                    log("  → Nhớ chọn mức khung hình cao nhất trong cài đặt đồ họa của game");
                 }
             }
 
             // 4) Game Mode hieu nang
-            if (game != null && (prefs.getBoolean(K_GAMEMODE, true) || prefs.getBoolean(K_FPS60, true))) {
+            if (game != null && (prefs.getBoolean(K_GAMEMODE, true) || prefs.getBoolean(K_FPS120, true))) {
                 if (step("Game Mode = hiệu năng", "cmd game mode performance " + game)) {
                     restore.put("gamemode:" + game, "cmd game mode standard " + game);
                 }
@@ -630,9 +634,17 @@ public class MainActivity extends Activity {
             }
 
             // 8) GOS
-            if (prefs.getBoolean(K_GOS, false)) {
-                if (step("Tắt GOS", "pm disable-user --user 0 " + GOS_PKG)) {
+            if (prefs.getBoolean(K_GOS, true)) {
+                if (step("Tắt GOS (bỏ giới hạn hiệu năng Samsung)", "pm disable-user --user 0 " + GOS_PKG)) {
                     restore.put("gos", "pm enable " + GOS_PKG);
+                }
+            }
+
+            // 8b) Bo gioi han nhiet: bao "khong nong" cho game de game khong tu ha FPS/do hoa.
+            // Chip van tu bao ve o muc phan cung.
+            if (prefs.getBoolean(K_THERMAL, false)) {
+                if (step("Bỏ giới hạn nhiệt cho game", "cmd thermalservice override-status 0")) {
+                    restore.put("thermal", "cmd thermalservice reset");
                 }
             }
 

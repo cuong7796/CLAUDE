@@ -49,9 +49,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: tft-boost-v${{ github.run_number }}
-          name: TFT Boost 2.1 + Pro 3.0 (build ${{ github.run_number }})
+          name: TFT Boost 2.1 + Pro 3.1 (build ${{ github.run_number }})
           body: |
-            - TFT-Boost-Pro.apk: bản dùng Shizuku – khóa 60 FPS, tối ưu tối đa, tự khôi phục khi thoát game.
+            - TFT-Boost-Pro.apk: bản dùng Shizuku – khóa 120 FPS, hiệu năng tối đa, tự khôi phục khi thoát game.
             - TFT-Boost.apk: bản không cần Shizuku (dùng Trợ năng).
           files: |
             TFT-Boost.apk
