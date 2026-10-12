@@ -43,6 +43,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: tft-boost-v${{ github.run_number }}
-          name: TFT Boost 2.0 (build ${{ github.run_number }})
+          name: TFT Boost 2.1 (build ${{ github.run_number }})
           body: Tải file TFT-Boost.apk bên dưới về điện thoại rồi cài đặt.
           files: TFT-Boost.apk

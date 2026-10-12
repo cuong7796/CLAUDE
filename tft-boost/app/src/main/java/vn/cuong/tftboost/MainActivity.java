@@ -7,6 +7,7 @@ import android.app.AppOpsManager;
 import android.app.NotificationManager;
 import android.app.usage.UsageStats;
 import android.app.usage.UsageStatsManager;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -135,8 +136,16 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleReturn();
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
+        handleReturn();
         logView.setText(BoostLog.text());
         BoostLog.setListener(all -> logView.setText(all));
         ui.removeCallbacks(ticker);
@@ -148,6 +157,26 @@ public class MainActivity extends Activity {
         super.onPause();
         BoostLog.setListener(null);
         ui.removeCallbacks(ticker);
+    }
+
+    /**
+     * Goi moi khi quay lai man hinh nay:
+     * - vua bat Tro nang tu nut Toi uu -> chay tiep toi uu;
+     * - dang trong phien choi ma anh quay lai day -> nghia la da thoat game -> khoi phuc.
+     */
+    private void handleReturn() {
+        if (Session.pending(this)) {
+            if (a11yOn()) {
+                Session.clearPending(this);
+                log("✓ Trợ năng đã bật – tiếp tục tối ưu");
+                ui.postDelayed(this::boost, 300);
+            }
+            return;
+        }
+        if (Session.active(this)) {
+            Session.end(this, "đã quay lại TFT Boost");
+            refreshStats();
+        }
     }
 
     // ------------------------------------------------------------------ giao dien
@@ -214,7 +243,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(18), dp(22), dp(18), dp(28));
         scroll.addView(root);
 
-        root.addView(text("TFT Boost 2.0", 26, C_GOLD, true));
+        root.addView(text("TFT Boost 2.1", 26, C_GOLD, true));
         root.addView(text("Tối ưu 1 chạm · Không cần Shizuku · Galaxy S25+", 13, C_DIM, false));
 
         statsView = text("…", 14, C_TEXT, false);
@@ -241,6 +270,9 @@ public class MainActivity extends Activity {
         root.addView(toggle("Bật Không làm phiền khi vào game", K_DND, true));
         root.addView(toggle("Buộc dừng các app vừa dùng (Trợ năng)", K_FORCE_STOP, true));
         root.addView(toggle("Đóng tất cả app gần đây (Trợ năng)", K_CLOSE_RECENTS, true));
+        root.addView(toggle("Thoát game → tự khôi phục & tự tắt Trợ năng", Session.K_AUTO_OFF, true));
+        root.addView(text("Khi bật: thoát game là Không làm phiền về như cũ và Trợ năng tự tắt. "
+                + "Lần tối ưu sau app mở trang Trợ năng, anh gạt bật là app tự chạy tiếp.", 12, C_DIM, false));
 
         root.addView(text("Thiết lập lần đầu", 15, C_GOLD, true), rowParams(18));
         root.addView(text("Làm lần lượt 1 → 4. Dòng trạng thái phía trên hiện ✓ là xong.", 12, C_DIM, false));
@@ -259,7 +291,7 @@ public class MainActivity extends Activity {
                 launchPackage(GAMING_HUB_PKG, "Không tìm thấy Gaming Hub trên máy.")), rowParams(8));
         root.addView(smallButton("Mở Chăm sóc thiết bị (Device care)", v ->
                 launchPackage(DEVICE_CARE_PKG, "Không mở được Chăm sóc thiết bị.")), rowParams(8));
-        root.addView(smallButton("↺ Tắt Không làm phiền sau khi chơi", v -> restore()), rowParams(8));
+        root.addView(smallButton("↺ Khôi phục ngay (Không làm phiền, Trợ năng)", v -> restore()), rowParams(8));
 
         root.addView(text("Nhật ký", 15, C_GOLD, true), rowParams(18));
         logView = text(BoostLog.text(), 12, C_DIM, false);
@@ -373,6 +405,23 @@ public class MainActivity extends Activity {
         } catch (Throwable t) {
             toast("Không mở được Thông tin ứng dụng.");
         }
+    }
+
+    /** Mo thang trang bat Tro nang cua TFT Boost (Android 12+), khong duoc thi mo danh sach Tro nang. */
+    private void openA11yForBoost() {
+        Session.markPending(this);
+        toast("Gạt BẬT TFT Boost → Cho phép. App sẽ tự quay lại và tối ưu.");
+        if (Build.VERSION.SDK_INT >= 31) {
+            try {
+                Intent i = new Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS");
+                i.putExtra(Intent.EXTRA_COMPONENT_NAME,
+                        new ComponentName(this, BoostService.class).flattenToString());
+                startActivity(i);
+                return;
+            } catch (Throwable ignored) {
+            }
+        }
+        openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS);
     }
 
     private boolean launchPackage(String pkg, String failMsg) {
@@ -510,7 +559,18 @@ public class MainActivity extends Activity {
             return;
         }
         final String game = findGame();
+        boolean wantStop = prefs.getBoolean(K_FORCE_STOP, true);
+        boolean wantClose = prefs.getBoolean(K_CLOSE_RECENTS, true);
+
+        // Tro nang dang tat (do lan truoc tu tat) -> mo trang bat, bat xong app tu chay tiep
+        if (svc == null && (wantStop || wantClose)) {
+            log("• Trợ năng đang tắt → mở trang bật Trợ năng");
+            openA11yForBoost();
+            return;
+        }
+
         log("──────── Bắt đầu tối ưu ────────");
+        Session.begin(this, game);
         long before = availMb();
 
         // 1) Khong lam phien
@@ -542,8 +602,6 @@ public class MainActivity extends Activity {
         log(String.format(Locale.US, "RAM trống: %d MB → %d MB (%+d MB)", before, after, after - before));
 
         // 3) Buoc dung + dong app gan day qua dich vu Tro nang
-        boolean wantStop = prefs.getBoolean(K_FORCE_STOP, true);
-        boolean wantClose = prefs.getBoolean(K_CLOSE_RECENTS, true);
         if (svc != null && (wantStop || wantClose)) {
             List<String> targets = new ArrayList<String>();
             if (wantStop) {
@@ -561,10 +619,8 @@ public class MainActivity extends Activity {
             return;
         }
 
-        if (svc == null) {
-            log("• Trợ năng chưa bật → chỉ chạy mức cơ bản");
-        }
         if (game == null) {
+            Session.end(this, "không có game để mở");
             log("✗ Chưa cài Đấu Trường Chân Lý nên không mở game được.");
             toast("Chưa tìm thấy Đấu Trường Chân Lý trên máy.");
             return;
@@ -574,6 +630,17 @@ public class MainActivity extends Activity {
     }
 
     private void restore() {
+        if (Session.active(this)) {
+            Session.end(this, "bấm Khôi phục");
+            refreshStats();
+            return;
+        }
+        BoostService svc = BoostService.instance;
+        if (svc != null && Session.autoOff(this)) {
+            svc.disableSelf();
+            BoostService.instance = null;
+            log("✓ Đã tắt Trợ năng");
+        }
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm.isNotificationPolicyAccessGranted()) {
             nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL);

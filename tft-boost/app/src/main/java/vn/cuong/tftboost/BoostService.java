@@ -17,7 +17,10 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.TextView;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Dich vu Tro nang: tu dong bam "Buoc dung" trong Thong tin ung dung cua tung app,
@@ -31,6 +34,23 @@ public class BoostService extends AccessibilityService {
     private static final String SETTINGS_PKG = "com.android.settings";
     private static final String[] STOP_TEXTS = {"Buộc dừng", "Force stop", "Dừng bắt buộc"};
     private static final String[] OK_TEXTS = {"OK", "Đồng ý"};
+    /** Cua so xuat hien tam thoi khi dang choi - khong tinh la thoat game. */
+    private static final Set<String> TRANSIENT = new HashSet<String>(Arrays.asList(
+            "android",
+            "com.android.systemui",
+            "com.samsung.android.game.gametools",
+            "com.samsung.android.game.gos",
+            "com.samsung.android.honeyboard",
+            "com.google.android.inputmethod.latin",
+            "com.samsung.android.incallui",
+            "com.android.permissioncontroller",
+            "com.google.android.permissioncontroller",
+            "com.google.android.gms",
+            "com.android.vending",
+            "vn.cuong.tftboost"));
+    private static final long GRACE_HOME_MS = 8000;   // ve man hinh chinh
+    private static final long GRACE_OTHER_MS = 45000; // chuyen sang app khac (Zalo, trinh duyet...)
+
     private static final String[] CLOSE_ALL_TEXTS = {"Đóng tất cả", "Close all", "Clear all", "Xóa tất cả", "Đóng hết"};
 
     private static final int PH_IDLE = 0;
@@ -53,6 +73,8 @@ public class BoostService extends AccessibilityService {
     private long startedAt;
 
     private TextView overlay;
+    private boolean gameSeen;
+    private String homePkg;
 
     // ------------------------------------------------------------------ vong doi
 
@@ -60,6 +82,29 @@ public class BoostService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         instance = this;
+        homePkg = resolveHome();
+        // Vua duoc bat lai tu nut Toi uu -> tu quay ve TFT Boost de chay tiep
+        if (Session.pending(this)) {
+            try {
+                Intent i = new Intent(this, MainActivity.class);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private String resolveHome() {
+        try {
+            Intent home = new Intent(Intent.ACTION_MAIN);
+            home.addCategory(Intent.CATEGORY_HOME);
+            android.content.pm.ResolveInfo ri = getPackageManager().resolveActivity(home, 0);
+            if (ri != null && ri.activityInfo != null) {
+                return ri.activityInfo.packageName;
+            }
+        } catch (Throwable ignored) {
+        }
+        return "com.sec.android.app.launcher";
     }
 
     @Override
@@ -78,8 +123,50 @@ public class BoostService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // Khong dung su kien - dich vu tu doc man hinh theo chu ky khi dang toi uu
+        // Trong luc toi uu, dich vu tu doc man hinh theo chu ky nen bo qua su kien.
+        // Ngoai luc do, chi theo doi doi cua so de biet khi nao anh thoat game.
+        if (running || event == null || event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            return;
+        }
+        CharSequence cs = event.getPackageName();
+        if (cs == null || !Session.active(this)) {
+            return;
+        }
+        String pkg = cs.toString();
+        String game = Session.game(this);
+        if (game == null) {
+            return;
+        }
+        if (pkg.equals(game)) {
+            gameSeen = true;
+            h.removeCallbacks(exitCheck);
+            return;
+        }
+        if (!gameSeen || TRANSIENT.contains(pkg)) {
+            return;
+        }
+        long grace = pkg.equals(homePkg) ? GRACE_HOME_MS : GRACE_OTHER_MS;
+        h.removeCallbacks(exitCheck);
+        h.postDelayed(exitCheck, grace);
     }
+
+    /** Het thoi gian cho ma game chua quay lai man hinh -> coi nhu da thoat game. */
+    private final Runnable exitCheck = () -> {
+        if (running || !Session.active(this)) {
+            return;
+        }
+        String game = Session.game(this);
+        try {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root != null && root.getPackageName() != null && game != null
+                    && game.contentEquals(root.getPackageName())) {
+                return;
+            }
+        } catch (Throwable ignored) {
+        }
+        gameSeen = false;
+        Session.end(this, "đã thoát game");
+    };
 
     @Override
     public void onInterrupt() {
@@ -102,6 +189,8 @@ public class BoostService extends AccessibilityService {
         closeRecents = closeAll;
         stopped = 0;
         skipped = 0;
+        gameSeen = false;
+        h.removeCallbacks(exitCheck);
         running = true;
         startedAt = SystemClock.uptimeMillis();
         showOverlay("Đang tối ưu…");
@@ -264,6 +353,7 @@ public class BoostService extends AccessibilityService {
         abort();
         BoostLog.add(String.format(java.util.Locale.US, "Hoàn tất trong %.1f giây", secs));
         if (game == null) {
+            Session.end(this, "không có game để mở");
             return;
         }
         try {
