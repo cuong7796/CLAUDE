@@ -11,8 +11,8 @@ android {
         minSdk 26
         // targetSdk 34: tranh che do tran vien bat buoc cua Android 15, van cai binh thuong tren S25+
         targetSdk 34
-        versionCode 3
-        versionName '2.1'
+        versionCode 4
+        versionName '2.2'
     }
 
     // Khoa ky co dinh nam trong repo de cac ban build sau cai de len ban truoc duoc

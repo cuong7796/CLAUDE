@@ -1,13 +1,20 @@
 package vn.cuong.tftboost;
 
 import android.accessibilityservice.AccessibilityService;
+import android.app.ActivityManager;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Typeface;
 import android.net.Uri;
+import android.os.BatteryManager;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.Gravity;
@@ -15,6 +22,7 @@ import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -32,6 +40,11 @@ public class BoostService extends AccessibilityService {
     static volatile BoostService instance;
 
     private static final String SETTINGS_PKG = "com.android.settings";
+    static final String GAME_PREFIX = "com.riotgames.league.teamfighttactics";
+    static final String K_AUTO_DETECT = "auto_detect";
+    static final String K_HUD = "hud";
+    static final String K_HEAT = "heat_alert";
+    private static final float HOT_BATTERY_C = 45f;
     private static final String[] STOP_TEXTS = {"Buộc dừng", "Force stop", "Dừng bắt buộc"};
     private static final String[] OK_TEXTS = {"OK", "Đồng ý"};
     /** Cua so xuat hien tam thoi khi dang choi - khong tinh la thoat game. */
@@ -75,6 +88,8 @@ public class BoostService extends AccessibilityService {
     private TextView overlay;
     private boolean gameSeen;
     private String homePkg;
+    private TextView hud;
+    private boolean heatWarned;
 
     // ------------------------------------------------------------------ vong doi
 
@@ -110,6 +125,7 @@ public class BoostService extends AccessibilityService {
     @Override
     public boolean onUnbind(Intent intent) {
         abort();
+        hideHud();
         instance = null;
         return super.onUnbind(intent);
     }
@@ -117,6 +133,7 @@ public class BoostService extends AccessibilityService {
     @Override
     public void onDestroy() {
         abort();
+        hideHud();
         instance = null;
         super.onDestroy();
     }
@@ -129,10 +146,20 @@ public class BoostService extends AccessibilityService {
             return;
         }
         CharSequence cs = event.getPackageName();
-        if (cs == null || !Session.active(this)) {
+        if (cs == null) {
             return;
         }
         String pkg = cs.toString();
+        if (!Session.active(this)) {
+            // Anh mo game truc tiep (khong qua nut Toi uu) -> tu bat che do choi
+            if (pkg.startsWith(GAME_PREFIX) && prefs().getBoolean(K_AUTO_DETECT, true)) {
+                BoostLog.add("──────── Phát hiện mở game – bật chế độ chơi ────────");
+                Session.applyQuick(this, pkg);
+                gameSeen = true;
+                onGameVisible();
+            }
+            return;
+        }
         String game = Session.game(this);
         if (game == null) {
             return;
@@ -140,11 +167,15 @@ public class BoostService extends AccessibilityService {
         if (pkg.equals(game)) {
             gameSeen = true;
             h.removeCallbacks(exitCheck);
+            onGameVisible();
             return;
         }
         if (!gameSeen || TRANSIENT.contains(pkg)) {
             return;
         }
+        // Roi khoi game: an lop phu thong so, cho het thoi gian roi khoi phuc
+        h.removeCallbacks(hudTick);
+        hideHud();
         long grace = pkg.equals(homePkg) ? GRACE_HOME_MS : GRACE_OTHER_MS;
         h.removeCallbacks(exitCheck);
         h.postDelayed(exitCheck, grace);
@@ -170,6 +201,147 @@ public class BoostService extends AccessibilityService {
 
     @Override
     public void onInterrupt() {
+    }
+
+    private SharedPreferences prefs() {
+        return getSharedPreferences(Session.PREFS, Context.MODE_PRIVATE);
+    }
+
+    // ------------------------------------------------------------------ lop phu thong so + canh bao nong
+
+    private void onGameVisible() {
+        boolean wantHud = prefs().getBoolean(K_HUD, false);
+        boolean wantHeat = prefs().getBoolean(K_HEAT, true);
+        if (wantHud) {
+            showHud();
+        }
+        if (wantHud || wantHeat) {
+            h.removeCallbacks(hudTick);
+            h.post(hudTick);
+        }
+    }
+
+    /** Goi tu Session.end: dung moi thu cua phien choi. */
+    void onSessionEnded() {
+        h.removeCallbacks(hudTick);
+        h.removeCallbacks(exitCheck);
+        hideHud();
+        heatWarned = false;
+        gameSeen = false;
+    }
+
+    private final Runnable hudTick = new Runnable() {
+        @Override
+        public void run() {
+            if (!Session.active(BoostService.this)) {
+                hideHud();
+                return;
+            }
+            updateHud();
+            h.postDelayed(this, 3000);
+        }
+    };
+
+    private static String thermalName(int s) {
+        switch (s) {
+            case 0: return "Mát";
+            case 1: return "Hơi ấm";
+            case 2: return "Ấm";
+            case 3: return "Nóng";
+            case 4: return "Rất nóng";
+            case 5: return "Quá nóng";
+            case 6: return "Sắp tắt máy";
+            default: return "?";
+        }
+    }
+
+    private void updateHud() {
+        int thermal = -1;
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                thermal = pm.getCurrentThermalStatus();
+            }
+        } catch (Throwable ignored) {
+        }
+        float temp = 0f;
+        int level = -1;
+        boolean charging = false;
+        try {
+            Intent bat = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (bat != null) {
+                temp = bat.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10f;
+                level = bat.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                charging = bat.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0;
+            }
+        } catch (Throwable ignored) {
+        }
+        float ramGb = 0f;
+        try {
+            ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+            ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+            am.getMemoryInfo(mi);
+            ramGb = mi.availMem / (1024f * 1024f * 1024f);
+        } catch (Throwable ignored) {
+        }
+        if (hud != null) {
+            hud.setText(String.format(java.util.Locale.US, "%.1f°C · %s\nPin %d%%%s · RAM trống %.1f GB",
+                    temp, thermalName(thermal), level, charging ? " (sạc)" : "", ramGb));
+        }
+        boolean hot = thermal >= 3 || temp >= HOT_BATTERY_C;
+        if (hot && !heatWarned && prefs().getBoolean(K_HEAT, true)) {
+            heatWarned = true;
+            String msg = String.format(java.util.Locale.US,
+                    "⚠ Máy đang nóng (%.1f°C · %s): game sẽ bị hạ FPS. Nên giảm đồ họa, tháo ốp%s.",
+                    temp, thermalName(thermal), charging ? ", rút sạc hoặc bật Tạm dừng sạc USB trong Game Booster" : "");
+            BoostLog.add(msg);
+            try {
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private void showHud() {
+        if (hud != null) {
+            return;
+        }
+        try {
+            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            TextView v = new TextView(this);
+            v.setTextColor(Color.parseColor("#F0B232"));
+            v.setTextSize(11);
+            v.setTypeface(Typeface.DEFAULT_BOLD);
+            v.setBackgroundColor(Color.parseColor("#990E1220"));
+            v.setPadding(14, 8, 14, 8);
+            v.setText("TFT Boost…");
+            WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT);
+            lp.gravity = Gravity.TOP | Gravity.START;
+            lp.x = 24;
+            lp.y = 24;
+            wm.addView(v, lp);
+            hud = v;
+        } catch (Throwable ignored) {
+            hud = null;
+        }
+    }
+
+    private void hideHud() {
+        if (hud != null) {
+            try {
+                WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+                wm.removeView(hud);
+            } catch (Throwable ignored) {
+            }
+            hud = null;
+        }
     }
 
     boolean isRunning() {

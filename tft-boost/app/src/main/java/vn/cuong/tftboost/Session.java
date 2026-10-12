@@ -1,6 +1,7 @@
 package vn.cuong.tftboost;
 
 import android.app.NotificationManager;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Handler;
@@ -15,6 +16,9 @@ final class Session {
 
     static final String PREFS = "tftboost";
     static final String K_AUTO_OFF = "auto_off";
+    static final String K_DND = "dnd";
+    static final String K_SYNC = "sync_off";
+    private static final String K_PREV_SYNC = "session_prev_sync";
     private static final String K_ACTIVE = "session_active";
     private static final String K_GAME = "session_game";
     private static final String K_PREV_FILTER = "session_prev_filter";
@@ -60,6 +64,39 @@ final class Session {
         e.apply();
     }
 
+    /**
+     * Bat che do choi (khong can Tro nang): ghi trang thai goc, bat Khong lam phien, tam dung dong bo.
+     * Dung chung cho nut Toi uu va khi phat hien anh mo game truc tiep.
+     */
+    static void applyQuick(Context c, String game) {
+        begin(c, game);
+        SharedPreferences sp = p(c);
+        if (sp.getBoolean(K_DND, true)) {
+            try {
+                NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+                if (nm.isNotificationPolicyAccessGranted()) {
+                    nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_PRIORITY);
+                    BoostLog.add("✓ Bật Không làm phiền");
+                } else {
+                    BoostLog.add("• Bỏ qua Không làm phiền (chưa cấp quyền)");
+                }
+            } catch (Throwable t) {
+                BoostLog.add("✗ Không làm phiền — " + t);
+            }
+        }
+        if (sp.getBoolean(K_SYNC, true)) {
+            try {
+                if (!sp.contains(K_PREV_SYNC)) {
+                    sp.edit().putBoolean(K_PREV_SYNC, ContentResolver.getMasterSyncAutomatically()).apply();
+                }
+                ContentResolver.setMasterSyncAutomatically(false);
+                BoostLog.add("✓ Tạm dừng tự động đồng bộ (Gmail, Drive, Ảnh…)");
+            } catch (Throwable t) {
+                BoostLog.add("✗ Tạm dừng đồng bộ — " + t);
+            }
+        }
+    }
+
     /** Ket thuc phien: khoi phuc Khong lam phien, tat Tro nang neu duoc phep. */
     static void end(Context c, String reason) {
         SharedPreferences sp = p(c);
@@ -80,9 +117,20 @@ final class Session {
         } catch (Throwable t) {
             BoostLog.add("✗ Không khôi phục được Không làm phiền: " + t);
         }
-        sp.edit().putBoolean(K_ACTIVE, false).remove(K_GAME).remove(K_PREV_FILTER).apply();
+        if (sp.contains(K_PREV_SYNC)) {
+            try {
+                ContentResolver.setMasterSyncAutomatically(sp.getBoolean(K_PREV_SYNC, true));
+                BoostLog.add("✓ Đã trả tự động đồng bộ về như cũ");
+            } catch (Throwable t) {
+                BoostLog.add("✗ Không khôi phục được đồng bộ: " + t);
+            }
+        }
+        sp.edit().putBoolean(K_ACTIVE, false).remove(K_GAME).remove(K_PREV_FILTER).remove(K_PREV_SYNC).apply();
 
         final BoostService svc = BoostService.instance;
+        if (svc != null) {
+            new Handler(Looper.getMainLooper()).post(svc::onSessionEnded);
+        }
         if (autoOff(c) && svc != null) {
             BoostService.instance = null; // coi nhu da tat ngay, tranh lan toi uu ke tiep dung nham
             BoostLog.add("✓ Đã tự tắt Trợ năng");

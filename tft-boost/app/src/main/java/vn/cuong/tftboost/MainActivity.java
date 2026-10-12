@@ -18,17 +18,26 @@ import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.ConnectivityManager;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
+import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiManager;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.Environment;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.Process;
+import android.os.StatFs;
 import android.provider.Settings;
 import android.provider.Telephony;
 import android.telecom.TelecomManager;
+import android.view.Display;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -243,7 +252,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(18), dp(22), dp(18), dp(28));
         scroll.addView(root);
 
-        root.addView(text("TFT Boost 2.1", 26, C_GOLD, true));
+        root.addView(text("TFT Boost 2.2", 26, C_GOLD, true));
         root.addView(text("Tối ưu 1 chạm · Không cần Shizuku · Galaxy S25+", 13, C_DIM, false));
 
         statsView = text("…", 14, C_TEXT, false);
@@ -268,8 +277,12 @@ public class MainActivity extends Activity {
         root.addView(text("Tùy chọn khi tối ưu", 15, C_GOLD, true), rowParams(22));
         root.addView(toggle("Tự tối ưu ngay khi mở app (đúng 1 chạm)", K_AUTO, false));
         root.addView(toggle("Bật Không làm phiền khi vào game", K_DND, true));
+        root.addView(toggle("Tạm dừng tự động đồng bộ trong lúc chơi", Session.K_SYNC, true));
         root.addView(toggle("Buộc dừng các app vừa dùng (Trợ năng)", K_FORCE_STOP, true));
         root.addView(toggle("Đóng tất cả app gần đây (Trợ năng)", K_CLOSE_RECENTS, true));
+        root.addView(toggle("Hiện nhiệt độ · RAM · pin khi chơi (lớp phủ nhỏ góc trái)", BoostService.K_HUD, false));
+        root.addView(toggle("Cảnh báo khi máy quá nóng (sắp bị hạ FPS)", BoostService.K_HEAT, true));
+        root.addView(toggle("Tự bật chế độ chơi khi mở game trực tiếp", BoostService.K_AUTO_DETECT, true));
         root.addView(toggle("Thoát game → tự khôi phục & tự tắt Trợ năng", Session.K_AUTO_OFF, true));
         root.addView(text("Khi bật: thoát game là Không làm phiền về như cũ và Trợ năng tự tắt. "
                 + "Lần tối ưu sau app mở trang Trợ năng, anh gạt bật là app tự chạy tiếp.", 12, C_DIM, false));
@@ -283,6 +296,13 @@ public class MainActivity extends Activity {
                 openSettings(Settings.ACTION_USAGE_ACCESS_SETTINGS)), rowParams(8));
         root.addView(smallButton("4. Cấp quyền Không làm phiền", v ->
                 openSettings(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)), rowParams(8));
+
+        root.addView(text("Kiểm tra & tối ưu cài đặt máy", 15, C_GOLD, true), rowParams(18));
+        root.addView(smallButton("🔍 Kiểm tra máy (tìm thứ đang làm chậm game)", v -> checkup()), rowParams(8));
+        root.addView(smallButton("Màn hình → Độ mượt chuyển động (chọn Thích ứng)", v ->
+                openSettings(Settings.ACTION_DISPLAY_SETTINGS)), rowParams(8));
+        root.addView(smallButton("Tắt Tiết kiệm pin", v ->
+                openSettings(Settings.ACTION_BATTERY_SAVER_SETTINGS)), rowParams(8));
 
         root.addView(text("Công cụ", 15, C_GOLD, true), rowParams(18));
         root.addView(smallButton("Chọn app KHÔNG bị dừng (Zalo, Messenger…)", v -> pickKeepApps()), rowParams(8));
@@ -570,18 +590,19 @@ public class MainActivity extends Activity {
         }
 
         log("──────── Bắt đầu tối ưu ────────");
-        Session.begin(this, game);
         long before = availMb();
 
-        // 1) Khong lam phien
-        if (prefs.getBoolean(K_DND, true)) {
-            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm.isNotificationPolicyAccessGranted()) {
-                nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_PRIORITY);
-                log("✓ Đã bật Không làm phiền");
-            } else {
-                log("• Bỏ qua Không làm phiền (chưa cấp quyền)");
+        // 1) Khong lam phien + tam dung dong bo (ghi trang thai goc de khoi phuc)
+        Session.applyQuick(this, game);
+
+        // Canh bao nhung thu lam cham game ma app khong tu tat duoc
+        try {
+            PowerManager pwr = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pwr.isPowerSaveMode()) {
+                log("✗ Tiết kiệm pin đang BẬT – game bị giới hạn hiệu năng. Bấm nút \"Tắt Tiết kiệm pin\".");
+                toast("Tiết kiệm pin đang bật – nên tắt để game chạy mạnh nhất");
             }
+        } catch (Throwable ignored) {
         }
 
         // 2) Don tien trinh nen bang API thuong
@@ -627,6 +648,161 @@ public class MainActivity extends Activity {
         }
         log("▶ Mở game…");
         launchPackage(game, "Không mở được game.");
+    }
+
+    // ------------------------------------------------------------------ KIEM TRA MAY
+
+    /**
+     * Do man hinh co len 120Hz duoc khong: xin che do tan so cao nhat cho cua so cua app,
+     * cho 700ms roi doc tan so thuc. Neu van 60Hz -> may dang de Do muot chuyen dong = Tieu chuan.
+     */
+    private void checkup() {
+        float max = 60f;
+        try {
+            Display d = getWindowManager().getDefaultDisplay();
+            Display.Mode best = null;
+            for (Display.Mode m : d.getSupportedModes()) {
+                if (best == null || m.getRefreshRate() > best.getRefreshRate()) {
+                    best = m;
+                }
+            }
+            if (best != null) {
+                max = best.getRefreshRate();
+                // Chi xin tan so (khong doi do phan giai)
+                WindowManager.LayoutParams lp = getWindow().getAttributes();
+                lp.preferredRefreshRate = max;
+                getWindow().setAttributes(lp);
+            }
+        } catch (Throwable ignored) {
+        }
+        final float maxHz = max;
+        ui.postDelayed(() -> {
+            float now = 0f;
+            try {
+                now = getWindowManager().getDefaultDisplay().getRefreshRate();
+                WindowManager.LayoutParams lp = getWindow().getAttributes();
+                lp.preferredRefreshRate = 0f;
+                getWindow().setAttributes(lp);
+            } catch (Throwable ignored) {
+            }
+            showCheckup(maxHz, now);
+        }, 700);
+    }
+
+    private void showCheckup(float maxHz, float hzNow) {
+        StringBuilder ok = new StringBuilder();
+        StringBuilder bad = new StringBuilder();
+
+        // 1) Tan so quet
+        if (hzNow >= 100f) {
+            ok.append("✓ Màn hình lên được ").append(Math.round(hzNow)).append("Hz\n");
+        } else {
+            bad.append("✗ Màn hình đang khóa ").append(Math.round(hzNow)).append("Hz (tối đa ")
+                    .append(Math.round(maxHz)).append("Hz). Cài đặt → Màn hình → Độ mượt chuyển động → Thích ứng.\n");
+        }
+
+        // 2) Tiet kiem pin
+        PowerManager pwr = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (pwr.isPowerSaveMode()) {
+            bad.append("✗ Tiết kiệm pin đang bật – CPU/GPU bị giới hạn. Tắt trước khi chơi.\n");
+        } else {
+            ok.append("✓ Tiết kiệm pin đang tắt\n");
+        }
+
+        // 3) Nhiet do + sac
+        Intent bat = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        if (bat != null) {
+            float temp = bat.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10f;
+            boolean charging = bat.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0;
+            if (temp >= 40f) {
+                bad.append(String.format(Locale.US, "✗ Pin đang %.1f°C – máy nóng sẵn sẽ bị hạ FPS sớm. Để nguội rồi chơi.\n", temp));
+            } else {
+                ok.append(String.format(Locale.US, "✓ Nhiệt độ pin %.1f°C\n", temp));
+            }
+            if (charging) {
+                bad.append("✗ Đang cắm sạc – vừa sạc vừa chơi rất nóng. Bật Game Booster → Tạm dừng sạc USB khi chơi.\n");
+            }
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            int ts = pwr.getCurrentThermalStatus();
+            if (ts >= PowerManager.THERMAL_STATUS_MODERATE) {
+                bad.append("✗ Hệ thống báo máy đang nóng (mức ").append(ts).append("/6) – chip đang tự hạ xung.\n");
+            }
+        }
+
+        // 4) Bo nho trong
+        try {
+            StatFs st = new StatFs(Environment.getDataDirectory().getPath());
+            double freeGb = st.getAvailableBytes() / 1e9;
+            double pct = 100.0 * st.getAvailableBytes() / st.getTotalBytes();
+            if (pct < 10) {
+                bad.append(String.format(Locale.US, "✗ Bộ nhớ trong chỉ còn %.1f GB (%.0f%%) – máy chậm, game giật. Nên dọn trên 15%%.\n", freeGb, pct));
+            } else {
+                ok.append(String.format(Locale.US, "✓ Bộ nhớ trong trống %.0f GB (%.0f%%)\n", freeGb, pct));
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // 5) RAM
+        long avail = availMb();
+        if (avail < 2500) {
+            bad.append("✗ RAM trống chỉ ").append(avail).append(" MB – bấm Tối ưu để dọn app nền.\n");
+        } else {
+            ok.append("✓ RAM trống ").append(avail).append(" MB\n");
+        }
+
+        // 6) Mang
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            NetworkCapabilities nc = cm.getNetworkCapabilities(cm.getActiveNetwork());
+            if (nc == null) {
+                bad.append("✗ Không có kết nối mạng\n");
+            } else if (nc.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                WifiInfo wi = wm.getConnectionInfo();
+                int rssi = wi.getRssi();
+                int freq = wi.getFrequency();
+                String band = freq >= 5900 ? "6GHz" : freq >= 4900 ? "5GHz" : "2.4GHz";
+                String line = "Wi-Fi " + band + ", sóng " + rssi + " dBm";
+                if (freq < 4900) {
+                    bad.append("✗ ").append(line).append(" – băng 2.4GHz dễ nhiễu, ping cao. Nên chọn Wi-Fi 5GHz.\n");
+                } else if (rssi < -70) {
+                    bad.append("✗ ").append(line).append(" – sóng yếu, dễ lag. Lại gần router.\n");
+                } else {
+                    ok.append("✓ ").append(line).append("\n");
+                }
+            } else if (nc.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                ok.append("• Đang dùng 4G/5G – ổn nếu sóng mạnh; Wi-Fi 5GHz thường ping ổn định hơn\n");
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // 7) Quyen cua app
+        if (!a11yOn()) {
+            bad.append("• Trợ năng đang tắt – sẽ được bật khi bấm Tối ưu\n");
+        }
+        if (!usageGranted()) {
+            bad.append("✗ Chưa cấp Dữ liệu sử dụng – không buộc dừng được app nền (bước 3)\n");
+        }
+        if (!dndGranted()) {
+            bad.append("✗ Chưa cấp Không làm phiền (bước 4)\n");
+        }
+
+        String samsung = "\nNên chỉnh 1 lần trong Gaming Hub → ⋮ → Game Booster:\n"
+                + "• Tối ưu hóa game → Hiệu năng\n"
+                + "• Tùy chỉnh cho từng game → Đấu Trường Chân Lý → FPS cao nhất\n"
+                + "• Tạm dừng sạc USB khi chơi (nếu hay cắm sạc)\n"
+                + "Trong game: Cài đặt → Đồ họa → chọn khung hình cao nhất.";
+
+        String msg = (bad.length() == 0 ? "Không phát hiện vấn đề nào 👍\n\n" : bad + "\n") + ok + samsung;
+        new AlertDialog.Builder(this)
+                .setTitle(bad.length() == 0 ? "Máy đã sẵn sàng" : "Những thứ đang làm chậm game")
+                .setMessage(msg)
+                .setPositiveButton("Đóng", null)
+                .setNeutralButton("Mở Game Booster", (d, w) ->
+                        launchPackage(GAMING_HUB_PKG, "Không tìm thấy Gaming Hub trên máy."))
+                .show();
+        log("Kiểm tra máy: " + (bad.length() == 0 ? "không có vấn đề" : "có mục cần chỉnh – xem hộp thoại"));
     }
 
     private void restore() {
