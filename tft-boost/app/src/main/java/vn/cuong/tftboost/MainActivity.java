@@ -3,68 +3,102 @@ package vn.cuong.tftboost;
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.AlertDialog;
+import android.app.AppOpsManager;
 import android.app.NotificationManager;
+import android.app.usage.UsageStats;
+import android.app.usage.UsageStatsManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.BatteryManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Process;
 import android.provider.Settings;
-import android.view.Gravity;
+import android.provider.Telephony;
+import android.telecom.TelecomManager;
 import android.view.View;
 import android.widget.Button;
-import android.widget.CompoundButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.BufferedReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
-import rikka.shizuku.Shizuku;
 
 /**
- * TFT Boost - toi uu 1 cham cho Dau Truong Chan Ly Mobile tren Galaxy S25+.
+ * TFT Boost 2.0 - toi uu 1 cham cho Dau Truong Chan Ly Mobile, KHONG can Shizuku.
  *
- * Muc co ban (khong can gi them): don tien trinh nen, bat Khong lam phien, mo game.
- * Muc nang cao (qua Shizuku, quyen ADB shell): buoc dung app nen, dat Game Mode
- * "performance", che do hieu nang co dinh, ep 120Hz, tat GOS, bien dich toi uu game.
+ * Chuoi toi uu: bat Khong lam phien -> don tien trinh nen -> dich vu Tro nang tu bam
+ * "Buoc dung" cho cac app vua dung -> "Dong tat ca" app gan day -> mo game.
  */
 public class MainActivity extends Activity {
 
     private static final String GAME_PREFIX = "com.riotgames.league.teamfighttactics";
-    private static final String SHIZUKU_PKG = "moe.shizuku.privileged.api";
-    private static final String GOS_PKG = "com.samsung.android.game.gos";
     private static final String GAMING_HUB_PKG = "com.samsung.android.game.gamehome";
-    private static final int SHIZUKU_REQ = 7796;
+    private static final String DEVICE_CARE_PKG = "com.samsung.android.lool";
+    private static final long RECENT_WINDOW_MS = 12L * 60 * 60 * 1000; // app dung trong 12 gio qua
+    private static final int MAX_STOP = 30;
+
+    /** App he thong nang, buoc dung an toan (trinh duyet, video, mang xa hoi cai san...). */
+    private static final Set<String> HEAVY_SYSTEM = new HashSet<String>(Arrays.asList(
+            "com.android.chrome",
+            "com.google.android.youtube",
+            "com.google.android.apps.youtube.music",
+            "com.sec.android.app.sbrowser",
+            "com.google.android.apps.maps",
+            "com.google.android.apps.photos",
+            "com.google.android.gm",
+            "com.google.android.apps.docs",
+            "com.facebook.katana",
+            "com.facebook.orca",
+            "com.instagram.android",
+            "com.microsoft.office.officehubrow",
+            "com.netflix.mediaclient",
+            "com.samsung.android.app.tips",
+            "com.sec.android.app.shealth",
+            "com.samsung.android.voc",
+            "com.sec.android.app.samsungapps",
+            "com.android.vending"));
+
+    /** Khong bao gio buoc dung (bao thuc, goi dien, tin nhan, bo phan he thong). */
+    private static final Set<String> NEVER = new HashSet<String>(Arrays.asList(
+            "com.android.settings",
+            "com.android.systemui",
+            "com.sec.android.app.launcher",
+            "com.sec.android.app.clockpackage",
+            "com.samsung.android.dialer",
+            "com.samsung.android.messaging",
+            "com.samsung.android.incallui",
+            "com.google.android.gms",
+            "com.samsung.android.game.gamehome",
+            "com.samsung.android.game.gametools",
+            "com.samsung.android.game.gos",
+            "com.samsung.android.honeyboard",
+            "com.samsung.android.lool"));
 
     private static final String K_AUTO = "auto_run";
     private static final String K_DND = "dnd";
-    private static final String K_FORCE_STOP = "force_stop";
-    private static final String K_FIXED_PERF = "fixed_perf";
-    private static final String K_HZ = "hz120";
-    private static final String K_GOS = "gos_off";
+    private static final String K_FORCE_STOP = "a11y_force_stop";
+    private static final String K_CLOSE_RECENTS = "a11y_close_recents";
     private static final String K_KEEP = "keep";
 
     private static final int C_BG = Color.parseColor("#0E1220");
@@ -75,25 +109,10 @@ public class MainActivity extends Activity {
 
     private SharedPreferences prefs;
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
 
     private TextView statsView;
     private TextView logView;
     private Button boostBtn;
-    private volatile boolean busy = false;
-
-    private final Shizuku.OnRequestPermissionResultListener shizukuListener =
-            new Shizuku.OnRequestPermissionResultListener() {
-                @Override
-                public void onRequestPermissionResult(int requestCode, int grantResult) {
-                    if (requestCode == SHIZUKU_REQ) {
-                        log(grantResult == PackageManager.PERMISSION_GRANTED
-                                ? "✓ Đã được cấp quyền Shizuku."
-                                : "✗ Anh đã từ chối quyền Shizuku.");
-                        refreshStats();
-                    }
-                }
-            };
 
     private final Runnable ticker = new Runnable() {
         @Override
@@ -110,24 +129,16 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences("tftboost", Context.MODE_PRIVATE);
         setContentView(buildUi());
-        try {
-            Shizuku.addRequestPermissionResultListener(shizukuListener);
-        } catch (Throwable ignored) {
-        }
         if (savedInstanceState == null && prefs.getBoolean(K_AUTO, false)) {
-            // Cho Shizuku kip ket noi binder roi moi chay
-            ui.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    boost();
-                }
-            }, 600);
+            ui.postDelayed(this::boost, 500);
         }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        logView.setText(BoostLog.text());
+        BoostLog.setListener(all -> logView.setText(all));
         ui.removeCallbacks(ticker);
         ui.post(ticker);
     }
@@ -135,17 +146,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        BoostLog.setListener(null);
         ui.removeCallbacks(ticker);
-    }
-
-    @Override
-    protected void onDestroy() {
-        try {
-            Shizuku.removeRequestPermissionResultListener(shizukuListener);
-        } catch (Throwable ignored) {
-        }
-        worker.shutdown();
-        super.onDestroy();
     }
 
     // ------------------------------------------------------------------ giao dien
@@ -197,12 +199,8 @@ public class MainActivity extends Activity {
         s.setTextSize(14);
         s.setPadding(0, dp(8), 0, dp(8));
         s.setChecked(prefs.getBoolean(key, def));
-        s.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                prefs.edit().putBoolean(key, isChecked).apply();
-            }
-        });
+        s.setOnCheckedChangeListener((buttonView, isChecked) ->
+                prefs.edit().putBoolean(key, isChecked).apply());
         return s;
     }
 
@@ -216,8 +214,8 @@ public class MainActivity extends Activity {
         root.setPadding(dp(18), dp(22), dp(18), dp(28));
         scroll.addView(root);
 
-        root.addView(text("TFT Boost", 26, C_GOLD, true));
-        root.addView(text("Tối ưu 1 chạm · Đấu Trường Chân Lý · Galaxy S25+", 13, C_DIM, false));
+        root.addView(text("TFT Boost 2.0", 26, C_GOLD, true));
+        root.addView(text("Tối ưu 1 chạm · Không cần Shizuku · Galaxy S25+", 13, C_DIM, false));
 
         statsView = text("…", 14, C_TEXT, false);
         statsView.setBackground(round(C_CARD, 14));
@@ -232,12 +230,7 @@ public class MainActivity extends Activity {
         boostBtn.setTypeface(Typeface.DEFAULT_BOLD);
         boostBtn.setTextColor(C_BG);
         boostBtn.setBackground(round(C_GOLD, 18));
-        boostBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                boost();
-            }
-        });
+        boostBtn.setOnClickListener(v -> boost());
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(76));
         bp.topMargin = dp(16);
@@ -246,51 +239,30 @@ public class MainActivity extends Activity {
         root.addView(text("Tùy chọn khi tối ưu", 15, C_GOLD, true), rowParams(22));
         root.addView(toggle("Tự tối ưu ngay khi mở app (đúng 1 chạm)", K_AUTO, false));
         root.addView(toggle("Bật Không làm phiền khi vào game", K_DND, true));
-        root.addView(toggle("Buộc dừng hẳn app nền (Shizuku)", K_FORCE_STOP, true));
-        root.addView(toggle("Chế độ hiệu năng cố định (Shizuku)", K_FIXED_PERF, true));
-        root.addView(toggle("Ép màn hình tối thiểu 120Hz (Shizuku, tốn pin hơn)", K_HZ, false));
-        root.addView(toggle("Tắt GOS – bỏ giới hạn hiệu năng Samsung (Shizuku, máy nóng hơn)", K_GOS, false));
+        root.addView(toggle("Buộc dừng các app vừa dùng (Trợ năng)", K_FORCE_STOP, true));
+        root.addView(toggle("Đóng tất cả app gần đây (Trợ năng)", K_CLOSE_RECENTS, true));
 
-        root.addView(text("Thiết lập & công cụ", 15, C_GOLD, true), rowParams(18));
-        root.addView(smallButton("Cấp quyền Shizuku", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                requestShizuku();
-            }
-        }), rowParams(8));
-        root.addView(smallButton("Cấp quyền Không làm phiền", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                openSettings(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS);
-            }
-        }), rowParams(8));
-        root.addView(smallButton("Chọn app KHÔNG bị dừng (Zalo, Messenger…)", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                pickKeepApps();
-            }
-        }), rowParams(8));
-        root.addView(smallButton("Biên dịch tối ưu game (làm 1 lần sau mỗi bản cập nhật)", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                compileGame();
-            }
-        }), rowParams(8));
-        root.addView(smallButton("Mở Gaming Hub / Game Booster", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                launchPackage(GAMING_HUB_PKG, "Không tìm thấy Gaming Hub trên máy.");
-            }
-        }), rowParams(8));
-        root.addView(smallButton("↺ Khôi phục cài đặt sau khi chơi", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                restore();
-            }
-        }), rowParams(8));
+        root.addView(text("Thiết lập lần đầu", 15, C_GOLD, true), rowParams(18));
+        root.addView(text("Làm lần lượt 1 → 4. Dòng trạng thái phía trên hiện ✓ là xong.", 12, C_DIM, false));
+        root.addView(smallButton("1. Cho phép cài đặt bị hạn chế (⋮ góc phải)", v -> openAppInfo()), rowParams(8));
+        root.addView(smallButton("2. Bật Trợ năng → Ứng dụng đã cài → TFT Boost", v ->
+                openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS)), rowParams(8));
+        root.addView(smallButton("3. Cấp quyền Truy cập dữ liệu sử dụng", v ->
+                openSettings(Settings.ACTION_USAGE_ACCESS_SETTINGS)), rowParams(8));
+        root.addView(smallButton("4. Cấp quyền Không làm phiền", v ->
+                openSettings(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)), rowParams(8));
+
+        root.addView(text("Công cụ", 15, C_GOLD, true), rowParams(18));
+        root.addView(smallButton("Chọn app KHÔNG bị dừng (Zalo, Messenger…)", v -> pickKeepApps()), rowParams(8));
+        root.addView(smallButton("Xem trước danh sách sẽ bị buộc dừng", v -> previewTargets()), rowParams(8));
+        root.addView(smallButton("Mở Gaming Hub / Game Booster", v ->
+                launchPackage(GAMING_HUB_PKG, "Không tìm thấy Gaming Hub trên máy.")), rowParams(8));
+        root.addView(smallButton("Mở Chăm sóc thiết bị (Device care)", v ->
+                launchPackage(DEVICE_CARE_PKG, "Không mở được Chăm sóc thiết bị.")), rowParams(8));
+        root.addView(smallButton("↺ Tắt Không làm phiền sau khi chơi", v -> restore()), rowParams(8));
 
         root.addView(text("Nhật ký", 15, C_GOLD, true), rowParams(18));
-        logView = text("Sẵn sàng.", 12, C_DIM, false);
+        logView = text(BoostLog.text(), 12, C_DIM, false);
         logView.setTypeface(Typeface.MONOSPACE);
         logView.setBackground(round(C_CARD, 14));
         logView.setPadding(dp(12), dp(10), dp(12), dp(10));
@@ -300,42 +272,15 @@ public class MainActivity extends Activity {
         return scroll;
     }
 
-    private void log(final String line) {
-        ui.post(new Runnable() {
-            @Override
-            public void run() {
-                CharSequence old = logView.getText();
-                String all = old + "\n" + line;
-                // Giu nhat ky gon: toi da ~6000 ky tu cuoi
-                if (all.length() > 6000) {
-                    all = all.substring(all.length() - 6000);
-                }
-                logView.setText(all);
-            }
-        });
+    private void log(String line) {
+        BoostLog.add(line);
     }
 
-    private void toast(final String s) {
-        ui.post(new Runnable() {
-            @Override
-            public void run() {
-                Toast.makeText(MainActivity.this, s, Toast.LENGTH_LONG).show();
-            }
-        });
+    private void toast(String s) {
+        Toast.makeText(this, s, Toast.LENGTH_LONG).show();
     }
 
-    private void setBusy(final boolean b) {
-        busy = b;
-        ui.post(new Runnable() {
-            @Override
-            public void run() {
-                boostBtn.setEnabled(!b);
-                boostBtn.setAlpha(b ? 0.5f : 1f);
-            }
-        });
-    }
-
-    // ------------------------------------------------------------------ thong so
+    // ------------------------------------------------------------------ trang thai
 
     private long availMb() {
         ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
@@ -351,38 +296,49 @@ public class MainActivity extends Activity {
         return mi.totalMem / (1024 * 1024);
     }
 
+    private boolean a11yOn() {
+        return BoostService.instance != null;
+    }
+
+    private boolean usageGranted() {
+        try {
+            AppOpsManager ops = (AppOpsManager) getSystemService(Context.APP_OPS_SERVICE);
+            int mode;
+            if (Build.VERSION.SDK_INT >= 29) {
+                mode = ops.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS,
+                        Process.myUid(), getPackageName());
+            } else {
+                mode = ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS,
+                        Process.myUid(), getPackageName());
+            }
+            return mode == AppOpsManager.MODE_ALLOWED;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private boolean dndGranted() {
+        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        return nm.isNotificationPolicyAccessGranted();
+    }
+
     private void refreshStats() {
         if (statsView == null) {
             return;
         }
         StringBuilder sb = new StringBuilder();
-        long avail = availMb();
-        long total = totalMb();
-        sb.append(String.format(Locale.US, "RAM trống: %.1f / %.1f GB", avail / 1024f, total / 1024f));
-
+        sb.append(String.format(Locale.US, "RAM trống: %.1f / %.1f GB", availMb() / 1024f, totalMb() / 1024f));
         Intent bat = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         if (bat != null) {
             int t = bat.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0);
             int level = bat.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
             sb.append(String.format(Locale.US, "\nPin: %d%%  ·  Nhiệt độ pin: %.1f°C", level, t / 10f));
         }
-
         String game = findGame();
         sb.append("\nGame: ").append(game == null ? "CHƯA CÀI Đấu Trường Chân Lý" : game);
-
-        String sh;
-        if (!shizukuAlive()) {
-            sh = "chưa chạy (chỉ dùng được mức cơ bản)";
-        } else if (!shizukuGranted()) {
-            sh = "đang chạy, chưa cấp quyền";
-        } else {
-            sh = "sẵn sàng ✓";
-        }
-        sb.append("\nShizuku: ").append(sh);
-
-        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        sb.append("\nQuyền Không làm phiền: ")
-                .append(nm.isNotificationPolicyAccessGranted() ? "đã cấp ✓" : "chưa cấp");
+        sb.append("\nTrợ năng TFT Boost: ").append(a11yOn() ? "đang bật ✓" : "CHƯA BẬT");
+        sb.append("\nDữ liệu sử dụng: ").append(usageGranted() ? "đã cấp ✓" : "chưa cấp");
+        sb.append("\nKhông làm phiền: ").append(dndGranted() ? "đã cấp ✓" : "chưa cấp");
         statsView.setText(sb.toString());
     }
 
@@ -390,8 +346,7 @@ public class MainActivity extends Activity {
 
     private String findGame() {
         try {
-            List<ApplicationInfo> apps = getPackageManager().getInstalledApplications(0);
-            for (ApplicationInfo ai : apps) {
+            for (ApplicationInfo ai : getPackageManager().getInstalledApplications(0)) {
                 if (ai.packageName.startsWith(GAME_PREFIX)) {
                     return ai.packageName;
                 }
@@ -401,21 +356,22 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    private Set<String> keepSet(String game) {
-        Set<String> keep = new HashSet<String>(prefs.getStringSet(K_KEEP, new HashSet<String>()));
-        keep.add(getPackageName());
-        keep.add(SHIZUKU_PKG);
-        if (game != null) {
-            keep.add(game);
-        }
-        return keep;
-    }
-
     private void openSettings(String action) {
         try {
             startActivity(new Intent(action));
         } catch (Throwable t) {
             toast("Không mở được màn hình cài đặt này.");
+        }
+    }
+
+    private void openAppInfo() {
+        try {
+            Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(i);
+            toast("Bấm ⋮ góc trên bên phải → Cho phép cài đặt bị hạn chế");
+        } catch (Throwable t) {
+            toast("Không mở được Thông tin ứng dụng.");
         }
     }
 
@@ -433,127 +389,129 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    // ------------------------------------------------------------------ Shizuku
-
-    private boolean shizukuAlive() {
+    /** Cac goi tuyet doi khong dung: app nay, game, danh sach giu lai, launcher, ban phim, SMS, dien thoai. */
+    private Set<String> protectedSet(String game) {
+        Set<String> keep = new HashSet<String>(prefs.getStringSet(K_KEEP, new HashSet<String>()));
+        keep.addAll(NEVER);
+        keep.add(getPackageName());
+        if (game != null) {
+            keep.add(game);
+        }
+        PackageManager pm = getPackageManager();
         try {
-            return Shizuku.pingBinder();
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    private boolean shizukuGranted() {
-        try {
-            return Shizuku.pingBinder()
-                    && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    private void requestShizuku() {
-        if (!shizukuAlive()) {
-            if (!launchPackage(SHIZUKU_PKG,
-                    "Chưa cài hoặc chưa khởi động Shizuku. Cài Shizuku từ CH Play rồi bấm Start trong app đó.")) {
-                log("✗ Shizuku chưa chạy. Cài Shizuku, bật Gỡ lỗi không dây, ghép nối rồi bấm Start.");
-            }
-            return;
-        }
-        if (shizukuGranted()) {
-            toast("Shizuku đã sẵn sàng.");
-            return;
-        }
-        try {
-            Shizuku.requestPermission(SHIZUKU_REQ);
-        } catch (Throwable t) {
-            log("✗ Không xin được quyền Shizuku: " + t);
-        }
-    }
-
-    /** Ket qua mot lenh shell chay qua Shizuku. */
-    private static final class Result {
-        int code = -1;
-        String out = "";
-    }
-
-    private static String readAll(InputStream in) {
-        StringBuilder sb = new StringBuilder();
-        try {
-            BufferedReader r = new BufferedReader(new InputStreamReader(in));
-            String line;
-            while ((line = r.readLine()) != null) {
-                sb.append(line).append('\n');
+            Intent home = new Intent(Intent.ACTION_MAIN);
+            home.addCategory(Intent.CATEGORY_HOME);
+            ResolveInfo ri = pm.resolveActivity(home, 0);
+            if (ri != null && ri.activityInfo != null) {
+                keep.add(ri.activityInfo.packageName);
             }
         } catch (Throwable ignored) {
         }
-        return sb.toString().trim();
-    }
-
-    /**
-     * Chay lenh voi quyen shell (uid 2000) thong qua Shizuku.
-     * Shizuku.newProcess la ham private tu API 13 nen goi bang reflection.
-     */
-    private Result sh(String cmd) {
-        Result res = new Result();
         try {
-            Method m = Shizuku.class.getDeclaredMethod(
-                    "newProcess", String[].class, String[].class, String.class);
-            m.setAccessible(true);
-            // "2>&1" de gop loi vao dau ra, tranh treo vi day bo dem stderr
-            Process p = (Process) m.invoke(null,
-                    new Object[]{new String[]{"sh", "-c", cmd + " 2>&1"}, null, null});
-            res.out = readAll(p.getInputStream());
-            res.code = p.waitFor();
-            p.destroy();
-        } catch (Throwable t) {
-            Throwable c = t.getCause() != null ? t.getCause() : t;
-            res.out = String.valueOf(c);
+            String ime = Settings.Secure.getString(getContentResolver(), Settings.Secure.DEFAULT_INPUT_METHOD);
+            if (ime != null && ime.contains("/")) {
+                keep.add(ime.substring(0, ime.indexOf('/')));
+            }
+        } catch (Throwable ignored) {
         }
-        return res;
+        try {
+            String sms = Telephony.Sms.getDefaultSmsPackage(this);
+            if (sms != null) {
+                keep.add(sms);
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            TelecomManager tm = (TelecomManager) getSystemService(Context.TELECOM_SERVICE);
+            if (tm != null && tm.getDefaultDialerPackage() != null) {
+                keep.add(tm.getDefaultDialerPackage());
+            }
+        } catch (Throwable ignored) {
+        }
+        return keep;
     }
 
-    /** Chay 1 lenh va ghi ket qua vao nhat ky. */
-    private boolean step(String label, String cmd) {
-        Result r = sh(cmd);
-        boolean ok = r.code == 0;
-        String detail = r.out.isEmpty() ? "" : " — " + firstLine(r.out);
-        log((ok ? "✓ " : "✗ ") + label + (ok && r.out.length() > 80 ? "" : detail));
-        return ok;
+    /** App can buoc dung: co mo tu man hinh chinh, da dung trong 12 gio qua, khong thuoc danh sach bao ve. */
+    private List<String> collectTargets(String game) {
+        final List<String> out = new ArrayList<String>();
+        if (!usageGranted()) {
+            return out;
+        }
+        Set<String> keep = protectedSet(game);
+        PackageManager pm = getPackageManager();
+        long now = System.currentTimeMillis();
+        UsageStatsManager usm = (UsageStatsManager) getSystemService(Context.USAGE_STATS_SERVICE);
+        Map<String, UsageStats> stats = usm.queryAndAggregateUsageStats(now - RECENT_WINDOW_MS, now);
+        final List<UsageStats> recent = new ArrayList<UsageStats>();
+        for (UsageStats us : stats.values()) {
+            if (us.getLastTimeUsed() >= now - RECENT_WINDOW_MS) {
+                recent.add(us);
+            }
+        }
+        Collections.sort(recent, (a, b) -> Long.compare(b.getLastTimeUsed(), a.getLastTimeUsed()));
+        for (UsageStats us : recent) {
+            String pkg = us.getPackageName();
+            if (keep.contains(pkg) || out.contains(pkg)) {
+                continue;
+            }
+            try {
+                ApplicationInfo ai = pm.getApplicationInfo(pkg, 0);
+                boolean system = (ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
+                if (system && !HEAVY_SYSTEM.contains(pkg)) {
+                    continue;
+                }
+                if (pm.getLaunchIntentForPackage(pkg) == null) {
+                    continue;
+                }
+                out.add(pkg);
+            } catch (Throwable ignored) {
+            }
+            if (out.size() >= MAX_STOP) {
+                break;
+            }
+        }
+        return out;
     }
 
-    private static String firstLine(String s) {
-        int i = s.indexOf('\n');
-        String f = i < 0 ? s : s.substring(0, i);
-        return f.length() > 140 ? f.substring(0, 140) + "…" : f;
+    private List<String> labelsOf(List<String> pkgs) {
+        PackageManager pm = getPackageManager();
+        List<String> names = new ArrayList<String>();
+        for (String p : pkgs) {
+            try {
+                names.add(String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(p, 0))));
+            } catch (Throwable t) {
+                names.add(p);
+            }
+        }
+        return names;
+    }
+
+    private void previewTargets() {
+        if (!usageGranted()) {
+            toast("Cần cấp quyền Truy cập dữ liệu sử dụng trước (bước 3).");
+            return;
+        }
+        List<String> names = labelsOf(collectTargets(findGame()));
+        String msg = names.isEmpty()
+                ? "Không có app nào cần buộc dừng lúc này."
+                : "Sẽ buộc dừng " + names.size() + " app:\n\n• " + android.text.TextUtils.join("\n• ", names);
+        new AlertDialog.Builder(this)
+                .setTitle("Danh sách buộc dừng")
+                .setMessage(msg)
+                .setPositiveButton("Đóng", null)
+                .show();
     }
 
     // ------------------------------------------------------------------ TOI UU
 
     private void boost() {
-        if (busy) {
+        BoostService svc = BoostService.instance;
+        if (svc != null && svc.isRunning()) {
             return;
         }
-        setBusy(true);
-        worker.execute(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    doBoost();
-                } catch (Throwable t) {
-                    log("✗ Lỗi: " + t);
-                } finally {
-                    setBusy(false);
-                }
-            }
-        });
-    }
-
-    private void doBoost() {
         final String game = findGame();
         log("──────── Bắt đầu tối ưu ────────");
         long before = availMb();
-        Set<String> keep = keepSet(game);
 
         // 1) Khong lam phien
         if (prefs.getBoolean(K_DND, true)) {
@@ -566,7 +524,8 @@ public class MainActivity extends Activity {
             }
         }
 
-        // 2) Don tien trinh nen bang API thuong (khong can Shizuku)
+        // 2) Don tien trinh nen bang API thuong
+        Set<String> keep = protectedSet(game);
         ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
         int killed = 0;
         try {
@@ -578,136 +537,50 @@ public class MainActivity extends Activity {
             }
         } catch (Throwable ignored) {
         }
-        log("✓ Đã gửi lệnh dọn nền cho " + killed + " gói");
-
-        // 3) Cac lenh cap ADB qua Shizuku
-        if (shizukuGranted()) {
-            if (prefs.getBoolean(K_FORCE_STOP, true)) {
-                Result list = sh("pm list packages -3");
-                StringBuilder script = new StringBuilder();
-                int n = 0;
-                if (list.code == 0) {
-                    for (String line : list.out.split("\n")) {
-                        String pkg = line.replace("package:", "").trim();
-                        if (pkg.isEmpty() || keep.contains(pkg) || !pkg.matches("[A-Za-z0-9._]+")) {
-                            continue;
-                        }
-                        script.append("am force-stop ").append(pkg).append("; ");
-                        n++;
-                    }
-                }
-                if (n > 0) {
-                    script.append("true");
-                    step("Buộc dừng " + n + " app bên thứ ba", script.toString());
-                } else {
-                    log("• Không có app nào cần buộc dừng");
-                }
-            }
-            step("Dọn toàn bộ tiến trình nền", "am kill-all");
-            if (game != null) {
-                step("Game Mode = performance cho game", "cmd game mode performance " + game);
-            }
-            if (prefs.getBoolean(K_FIXED_PERF, true)) {
-                step("Chế độ hiệu năng cố định", "cmd power set-fixed-performance-mode-enabled true");
-            }
-            if (prefs.getBoolean(K_HZ, false)) {
-                step("Ép tối thiểu 120Hz", "settings put system min_refresh_rate 120.0");
-            }
-            if (prefs.getBoolean(K_GOS, false)) {
-                step("Tắt GOS", "pm disable-user --user 0 " + GOS_PKG);
-            }
-        } else {
-            log("• Shizuku chưa sẵn sàng → chỉ chạy mức cơ bản");
-        }
-
-        // 4) Ket qua
-        try {
-            Thread.sleep(700);
-        } catch (InterruptedException ignored) {
-        }
+        log("✓ Đã dọn tiến trình nền của " + killed + " gói");
         long after = availMb();
         log(String.format(Locale.US, "RAM trống: %d MB → %d MB (%+d MB)", before, after, after - before));
 
-        // 5) Vao game
+        // 3) Buoc dung + dong app gan day qua dich vu Tro nang
+        boolean wantStop = prefs.getBoolean(K_FORCE_STOP, true);
+        boolean wantClose = prefs.getBoolean(K_CLOSE_RECENTS, true);
+        if (svc != null && (wantStop || wantClose)) {
+            List<String> targets = new ArrayList<String>();
+            if (wantStop) {
+                if (usageGranted()) {
+                    targets = collectTargets(game);
+                    log("• Sẽ buộc dừng " + targets.size() + " app vừa dùng");
+                } else {
+                    log("• Bỏ qua buộc dừng (chưa cấp quyền Dữ liệu sử dụng)");
+                }
+            }
+            if (game == null) {
+                log("✗ Chưa cài Đấu Trường Chân Lý – tối ưu xong sẽ không mở game.");
+            }
+            svc.start(targets, labelsOf(targets), game, wantClose);
+            return;
+        }
+
+        if (svc == null) {
+            log("• Trợ năng chưa bật → chỉ chạy mức cơ bản");
+        }
         if (game == null) {
             log("✗ Chưa cài Đấu Trường Chân Lý nên không mở game được.");
             toast("Chưa tìm thấy Đấu Trường Chân Lý trên máy.");
             return;
         }
         log("▶ Mở game…");
-        ui.post(new Runnable() {
-            @Override
-            public void run() {
-                launchPackage(game, "Không mở được game.");
-            }
-        });
+        launchPackage(game, "Không mở được game.");
     }
-
-    // ------------------------------------------------------------------ KHOI PHUC
 
     private void restore() {
-        if (busy) {
-            return;
+        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm.isNotificationPolicyAccessGranted()) {
+            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL);
+            log("✓ Đã tắt Không làm phiền");
+        } else {
+            log("• Chưa cấp quyền Không làm phiền nên không có gì để khôi phục");
         }
-        setBusy(true);
-        worker.execute(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    log("──────── Khôi phục ────────");
-                    NotificationManager nm =
-                            (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-                    if (nm.isNotificationPolicyAccessGranted()) {
-                        nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL);
-                        log("✓ Đã tắt Không làm phiền");
-                    }
-                    if (shizukuGranted()) {
-                        String game = findGame();
-                        if (game != null) {
-                            step("Game Mode = standard", "cmd game mode standard " + game);
-                        }
-                        step("Tắt hiệu năng cố định", "cmd power set-fixed-performance-mode-enabled false");
-                        step("Bỏ ép 120Hz", "settings delete system min_refresh_rate");
-                        step("Bật lại GOS", "pm enable " + GOS_PKG);
-                    } else {
-                        log("• Shizuku chưa sẵn sàng → chỉ khôi phục Không làm phiền");
-                    }
-                } catch (Throwable t) {
-                    log("✗ Lỗi: " + t);
-                } finally {
-                    setBusy(false);
-                }
-            }
-        });
-    }
-
-    // ------------------------------------------------------------------ BIEN DICH GAME
-
-    private void compileGame() {
-        final String game = findGame();
-        if (game == null) {
-            toast("Chưa tìm thấy Đấu Trường Chân Lý trên máy.");
-            return;
-        }
-        if (!shizukuGranted()) {
-            toast("Tính năng này cần Shizuku.");
-            return;
-        }
-        if (busy) {
-            return;
-        }
-        setBusy(true);
-        log("Đang biên dịch tối ưu game, có thể mất 1–3 phút, anh đừng thoát app…");
-        worker.execute(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    step("Biên dịch tối ưu (speed) " + game, "cmd package compile -m speed -f " + game);
-                } finally {
-                    setBusy(false);
-                }
-            }
-        });
     }
 
     // ------------------------------------------------------------------ DANH SACH GIU LAI
@@ -718,30 +591,26 @@ public class MainActivity extends Activity {
         try {
             for (ApplicationInfo ai : pm.getInstalledApplications(0)) {
                 boolean system = (ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
-                if (!system && !ai.packageName.equals(getPackageName())
+                boolean eligible = !system || HEAVY_SYSTEM.contains(ai.packageName);
+                if (eligible && !ai.packageName.equals(getPackageName())
                         && !ai.packageName.startsWith(GAME_PREFIX)
-                        && !ai.packageName.equals(SHIZUKU_PKG)) {
+                        && pm.getLaunchIntentForPackage(ai.packageName) != null) {
                     apps.add(ai);
                 }
             }
         } catch (Throwable ignored) {
         }
-        final String[] labels = new String[apps.size()];
         final List<String> names = new ArrayList<String>();
         for (ApplicationInfo ai : apps) {
             names.add(String.valueOf(pm.getApplicationLabel(ai)));
         }
-        // Sap xep theo ten hien thi
         final List<Integer> order = new ArrayList<Integer>();
         for (int i = 0; i < apps.size(); i++) {
             order.add(i);
         }
-        Collections.sort(order, new Comparator<Integer>() {
-            @Override
-            public int compare(Integer a, Integer b) {
-                return names.get(a).compareToIgnoreCase(names.get(b));
-            }
-        });
+        Collections.sort(order, (a, b) -> names.get(a).compareToIgnoreCase(names.get(b)));
+
+        final String[] labels = new String[apps.size()];
         final String[] pkgs = new String[apps.size()];
         final boolean[] checked = new boolean[apps.size()];
         final Set<String> keep = new HashSet<String>(prefs.getStringSet(K_KEEP, new HashSet<String>()));
@@ -753,24 +622,16 @@ public class MainActivity extends Activity {
         }
         new AlertDialog.Builder(this)
                 .setTitle("App được giữ chạy nền")
-                .setMultiChoiceItems(labels, checked, new android.content.DialogInterface.OnMultiChoiceClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which, boolean isChecked) {
-                        checked[which] = isChecked;
-                    }
-                })
-                .setPositiveButton("Lưu", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface dialog, int which) {
-                        Set<String> out = new HashSet<String>();
-                        for (int i = 0; i < pkgs.length; i++) {
-                            if (checked[i]) {
-                                out.add(pkgs[i]);
-                            }
+                .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) -> checked[which] = isChecked)
+                .setPositiveButton("Lưu", (dialog, which) -> {
+                    Set<String> out = new HashSet<String>();
+                    for (int i = 0; i < pkgs.length; i++) {
+                        if (checked[i]) {
+                            out.add(pkgs[i]);
                         }
-                        prefs.edit().putStringSet(K_KEEP, out).apply();
-                        log("✓ Đã lưu " + out.size() + " app được giữ lại");
                     }
+                    prefs.edit().putStringSet(K_KEEP, out).apply();
+                    log("✓ Đã lưu " + out.size() + " app được giữ lại");
                 })
                 .setNegativeButton("Hủy", null)
                 .show();

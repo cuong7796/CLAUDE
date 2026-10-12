@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">TFT Boost</string>
+    <string name="a11y_desc">TFT Boost chỉ dùng Trợ năng khi anh bấm nút Tối ưu: tự mở Thông tin ứng dụng của các app vừa dùng để bấm Buộc dừng, sau đó bấm Đóng tất cả ở danh sách app gần đây rồi mở Đấu Trường Chân Lý. App không đọc, không lưu và không gửi nội dung màn hình đi đâu.</string>
 </resources>

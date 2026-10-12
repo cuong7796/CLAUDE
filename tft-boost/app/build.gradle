@@ -11,8 +11,8 @@ android {
         minSdk 26
         // targetSdk 34: tranh che do tran vien bat buoc cua Android 15, van cai binh thuong tren S25+
         targetSdk 34
-        versionCode 1
-        versionName '1.0'
+        versionCode 2
+        versionName '2.0'
     }
 
     // Khoa ky co dinh nam trong repo de cac ban build sau cai de len ban truoc duoc
@@ -46,7 +46,3 @@ android {
     }
 }
 
-dependencies {
-    implementation 'dev.rikka.shizuku:api:13.1.5'
-    implementation 'dev.rikka.shizuku:provider:13.1.5'
-}
