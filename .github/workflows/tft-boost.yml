@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'tft-boost/**'
+      - 'tft-boost-pro/**'
       - '.github/workflows/tft-boost.yml'
   workflow_dispatch:
 
@@ -13,9 +14,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: tft-boost
     steps:
       - uses: actions/checkout@v5
 
@@ -28,21 +26,33 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Build APK
-        run: gradle --no-daemon assembleDebug
+      - name: Build TFT Boost (khong can Shizuku)
+        working-directory: tft-boost
+        run: |
+          gradle --no-daemon assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/TFT-Boost.apk"
 
-      - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/TFT-Boost.apk"
+      - name: Build TFT Boost Pro (Shizuku)
+        working-directory: tft-boost-pro
+        run: |
+          gradle --no-daemon assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/TFT-Boost-Pro.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: TFT-Boost-apk
-          path: TFT-Boost.apk
+          path: |
+            TFT-Boost.apk
+            TFT-Boost-Pro.apk
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: tft-boost-v${{ github.run_number }}
-          name: TFT Boost 2.1 (build ${{ github.run_number }})
-          body: Tải file TFT-Boost.apk bên dưới về điện thoại rồi cài đặt.
-          files: TFT-Boost.apk
+          name: TFT Boost 2.1 + Pro 3.0 (build ${{ github.run_number }})
+          body: |
+            - TFT-Boost-Pro.apk: bản dùng Shizuku – khóa 60 FPS, tối ưu tối đa, tự khôi phục khi thoát game.
+            - TFT-Boost.apk: bản không cần Shizuku (dùng Trợ năng).
+          files: |
+            TFT-Boost.apk
+            TFT-Boost-Pro.apk
