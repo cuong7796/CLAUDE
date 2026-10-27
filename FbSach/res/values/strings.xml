@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FB Sạch</string>
+    <string name="menu_home">Bảng tin</string>
+    <string name="menu_recent">Bảng tin (mới nhất)</string>
+    <string name="menu_messages">Tin nhắn</string>
+    <string name="menu_notifications">Thông báo</string>
+    <string name="menu_reload">Tải lại</string>
+    <string name="menu_top">Lên đầu trang</string>
+    <string name="menu_hide_pymk">Ẩn \"Những người bạn có thể biết\"</string>
+    <string name="menu_hide_suggested">Ẩn bài \"Gợi ý cho bạn\" / Reels gợi ý</string>
+    <string name="menu_desktop">Giao diện máy tính</string>
+    <string name="menu_open_browser">Mở trang hiện tại bằng trình duyệt</string>
+    <string name="menu_about">Thông tin</string>
+    <string name="blocked_count">Đã chặn: %1$d quảng cáo</string>
+    <string name="about_text">FB Sạch v1.0 — trình bọc web Facebook chặn quảng cáo.\n\nCơ chế 3 lớp:\n1. Chặn tên miền quảng cáo/theo dõi ở tầng mạng.\n2. CSS ẩn khung quảng cáo cột phải.\n3. Bộ lọc JavaScript nhận diện nhãn \"Được tài trợ\" / \"Sponsored\" / \"Ad\" và gỡ bài khỏi bảng tin.\n\nThuật toán lọc dựa trên SlimSocial for Facebook (GPL-2.0).</string>
+    <string name="no_browser">Không tìm thấy ứng dụng để mở liên kết</string>
+    <string name="downloading">Đang tải xuống…</string>
+</resources>
